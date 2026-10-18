@@ -37,6 +37,22 @@ spec:
         limits:
           memory: 2Gi
 
+    # Edits YAML in the GitOps repo (Promote stage). Runs as uid 1000 like the jnlp container,
+    # so it can write the files jnlp cloned into the shared workspace.
+    - name: yq
+      image: mikefarah/yq:4.54.1
+      command: [sleep]
+      args: [infinity]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          memory: 64Mi
+
   volumes:
     # Created by ESO from OpenBao secret/jenkins/dockerhub (k8s-lab: jenkins/secrets/dockerhub.yaml)
     - name: docker-config

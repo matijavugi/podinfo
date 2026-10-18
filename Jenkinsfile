@@ -2,6 +2,7 @@
 //
 // Every branch / PR: Lint -> Test -> Build (image built but not pushed)
 // master only:       ... -> Build & push docker.io/mvugrinec/podinfo:<version>-<sha>
+//                    -> Promote: commit the new tag to k8s-lab-gitops; Argo CD deploys it
 pipeline {
   agent {
     kubernetes {
@@ -15,6 +16,11 @@ pipeline {
   }
   environment {
     IMAGE = 'docker.io/mvugrinec/podinfo'
+    GITOPS_REPO = 'git@github.com:matijavugi/k8s-lab-gitops.git'
+    GITOPS_VALUES = 'apps/podinfo/values.yaml'
+    // Pinned GitHub SSH host key (https://api.github.com/meta): we refuse to push anywhere else,
+    // instead of trusting whatever server answers the first time.
+    GITHUB_HOST_KEY = 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl'
   }
   stages {
     stage('Version') {
@@ -63,6 +69,34 @@ pipeline {
                 ${push}
             """
           }
+        }
+      }
+    }
+    stage('Promote') {
+      when { branch 'master' }
+      steps {
+        // Deploy key (write access to k8s-lab-gitops only) as a temporary key file
+        withCredentials([sshUserPrivateKey(credentialsId: 'gitops-deploy-key', keyFileVariable: 'SSH_KEY')]) {
+          sh '''
+            echo "$GITHUB_HOST_KEY" > "$WORKSPACE@tmp/known_hosts"
+            export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$WORKSPACE@tmp/known_hosts"
+            rm -rf gitops
+            git clone --depth 1 "$GITOPS_REPO" gitops
+          '''
+          container('yq') {
+            sh 'yq -i ".image.tag = strenv(IMAGE_TAG)" "gitops/$GITOPS_VALUES"'
+          }
+          sh '''
+            export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$WORKSPACE@tmp/known_hosts"
+            cd gitops
+            git diff
+            if git diff --quiet; then echo "Tag $IMAGE_TAG is already deployed, nothing to do"; exit 0; fi
+            git -c user.name="Jenkins (k8s-lab)" -c user.email="jenkins@k8s-lab.local" \
+              commit -am "podinfo: deploy $IMAGE_TAG" \
+              -m "Built from matijavugi/podinfo@$GIT_COMMIT" -m "Jenkins: $BUILD_URL"
+            # Someone else pushed meanwhile? Rebase on top and retry once.
+            git push origin HEAD:main || { git pull --rebase origin main && git push origin HEAD:main; }
+          '''
         }
       }
     }
