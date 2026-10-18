@@ -1,0 +1,47 @@
+# Build pod for the Jenkinsfile. The Kubernetes plugin adds the "jnlp" agent container itself.
+# All containers share the workspace volume (the checked-out repo) at the same path.
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    # Lint + unit tests. Same Go version as the Dockerfile's builder stage.
+    - name: golang
+      image: golang:1.27-alpine
+      command: [sleep]
+      args: [infinity]
+      env:
+        - name: CGO_ENABLED
+          value: "0"                     # alpine has no C toolchain; podinfo is pure Go
+        - name: GOFLAGS
+          value: -buildvcs=false         # no git binary in this image
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          memory: 1536Mi
+
+    # Image build + push without a Docker daemon (maintained fork of Google's archived kaniko).
+    # The -debug variant includes a busybox shell, which Jenkins' sh step needs.
+    - name: kaniko
+      image: ghcr.io/osscontainertools/kaniko:v1.28.6-debug
+      command: [/busybox/cat]
+      tty: true                          # cat waits on the TTY forever = keeps the container alive
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker     # kaniko reads registry credentials from here
+      resources:
+        requests:
+          cpu: 500m
+          memory: 768Mi
+        limits:
+          memory: 2Gi
+
+  volumes:
+    # Created by ESO from OpenBao secret/jenkins/dockerhub (k8s-lab: jenkins/secrets/dockerhub.yaml)
+    - name: docker-config
+      secret:
+        secretName: dockerhub-push
+        items:
+          - key: .dockerconfigjson
+            path: config.json
